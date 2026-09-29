@@ -1,0 +1,141 @@
+openapi: 3.0.3
+info:
+  title: Core Banking Transfers API
+  version: 1.0.0
+  description: Спецификация API для инициализации и проведения переводов денежных средств между счетами.
+
+paths:
+  /api/v1/transfers:
+    post:
+      summary: Инициация перевода денежных средств
+      description: |
+        Создает операцию перевода. Метод поддерживает механизм идемпотентности 
+        через заголовок X-Idempotency-Key.
+      operationId: createTransfer
+      parameters:
+        - name: X-Idempotency-Key
+          in: header
+          required: true
+          description: Уникальный UUID клиентского запроса для предотвращения дублирования транзакций.
+          schema:
+            type: string
+            format: uuid
+            example: "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransferRequest'
+      responses:
+        '202':
+          description: Запрос принят в обработку (асинхронный клиринг).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferResponse'
+        '400':
+          description: Невалидный формат запроса или некорректный синтаксис JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Конфликт идемпотентности (запрос с таким X-Idempotency-Key уже выполняется или имеет другие параметры).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Семантическая/бизнес-ошибка (недостаточно средств, счет заблокирован).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BusinessErrorResponse'
+
+components:
+  schemas:
+    CreateTransferRequest:
+      type: object
+      required:
+        - source_account_id
+        - target_account_id
+        - amount
+        - currency
+      properties:
+        source_account_id:
+          type: string
+          format: uuid
+          description: Идентификатор счета списания
+          example: "e3b0c442-98fc-1c14-9afb-4c7fa43f7734"
+        target_account_id:
+          type: string
+          format: uuid
+          description: Идентификатор счета зачисления
+          example: "a8f5f167-f44e-4b2a-8b88-1234567890ab"
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+          description: Сумма перевода (больше 0)
+          example: 1500.50
+        currency:
+          type: string
+          enum: [RUB, USD, EUR]
+          example: RUB
+
+    TransferResponse:
+      type: object
+      required:
+        - transfer_id
+        - status
+        - created_at
+      properties:
+        transfer_id:
+          type: string
+          format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, SUCCESS, FAILED]
+          example: PROCESSING
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-09-24T14:30:00Z"
+
+    BusinessErrorResponse:
+      type: object
+      required:
+        - error_code
+        - message
+      properties:
+        error_code:
+          type: string
+          enum: [INSUFFICIENT_FUNDS, LIMIT_EXCEEDED, ACCOUNT_BLOCKED]
+          example: INSUFFICIENT_FUNDS
+        message:
+          type: string
+          example: "На счете списания недостаточно доступных средств."
+        details:
+          type: object
+          properties:
+            current_balance:
+              type: number
+              example: 350.00
+            required_amount:
+              type: number
+              example: 1500.50
+
+    ErrorResponse:
+      type: object
+      required:
+        - error_code
+        - message
+      properties:
+        error_code:
+          type: string
+          example: "IDEMPOTENCY_CONFLICT"
+        message:
+          type: string
+          example: "Запрос с данным ключом идемпотентности уже был обработан с другим телом запроса."

@@ -1,0 +1,57 @@
+@startuml
+autonumber
+actor "Пользователь" as User
+participant "Мобильное приложение" as App
+participant "Core API" as Core
+database "База данных" as DB
+participant "Payment Gateway" as Gateway
+
+User -> App: Нажимает "Перевести"\n(сумма, счет получателя)
+activate App
+
+App -> App: Генерация UUID\n(Idempotency-Key)
+App -> Core: POST /api/v1/transfers\nHeaders: X-Idempotency-Key: <UUID>\nBody: {from_account, to_account, amount}
+activate Core
+
+Core -> DB: Проверка Idempotency-Key
+activate DB
+DB --> Core: Ключ не найден (новая операция)
+deactivate DB
+
+Core -> DB: Проверка баланса и установка HOLD (PENDING)
+activate DB
+DB --> Core: Баланс заблокирован
+deactivate DB
+
+Core -> Gateway: POST /v1/payments (внешний запрос)
+activate Gateway
+
+alt Успешная отправка в обработку
+    Gateway --> Core: HTTP 202 Accepted {gateway_tx_id: "gw_123", status: "PROCESSING"}
+    Core -> DB: Обновление статуса транзакции -> PROCESSING
+    Core --> App: HTTP 202 Accepted {transfer_id: "tx_001", status: "PROCESSING"}
+    App --> User: Экран: "Перевод обрабатывается"
+
+    ... Асинхронное ожидание (банк проводит клиринг) ...
+
+    Gateway -> Core: POST /webhooks/payment-callback\n{gateway_tx_id: "gw_123", status: "SUCCESS"}
+    Core -> DB: Фиксация списания холда и статус -> SUCCESS
+    Core --> Gateway: HTTP 200 OK
+    Core -> App: Push-уведомление: "Перевод успешно доставлен!"
+
+else Таймаут сети / 504 Gateway Timeout
+    Gateway --x Core: Нет ответа (Timeout 30s)
+    Core -> DB: Статус -> PENDING_RECONCILIATION
+    Core --> App: HTTP 504 Gateway Timeout {code: "TX_TIMEOUT_WAIT_STATUS"}
+    deactivate Gateway
+    App --> User: Предупреждение: "Платеж подвис, уточняем статус"
+    
+    note over Core, Gateway
+      Фоновый Scheduler (Outbox/Reconciliation) 
+      будет запрашивать GET /v1/payments/gw_123 каждые 60 секунд
+    end note
+end
+
+deactivate Core
+deactivate App
+@enduml
